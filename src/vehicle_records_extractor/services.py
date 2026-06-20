@@ -12,6 +12,7 @@ from PIL import Image, ImageOps
 from PySide6.QtGui import QImage, QPixmap
 
 from .db import Database
+from .normalization import normalize_chassis, normalize_date, normalize_phone, normalize_vehicle_no
 from .models import FINAL_FIELDS, REQUIRED_FIELDS, SUPPORTED_EXTENSIONS
 
 REFERENCE_COLUMN_ALIASES = {
@@ -62,23 +63,13 @@ def import_reference_excel(db: Database, path: Path) -> int:
     return count
 
 
-def normalize_date(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(text, fmt).date().isoformat()
-        except ValueError:
-            pass
-    return text
-
-
 def normalize_record(data: dict[str, str]) -> dict[str, str]:
     normalized = {field: str(data.get(field, "") or "").strip() for field in FINAL_FIELDS}
-    normalized["chassis_no"] = normalized["chassis_no"].replace(" ", "").upper()
+    normalized["chassis_no"] = normalize_chassis(normalized["chassis_no"])
     normalized["birth_date"] = normalize_date(normalized["birth_date"])
     normalized["annual_expiry_date"] = normalize_date(normalized["annual_expiry_date"])
+    normalized["phone"] = normalize_phone(normalized["phone"])
+    normalized["vehicle_no"] = normalize_vehicle_no(normalized["vehicle_no"])
     return normalized
 
 
@@ -162,6 +153,10 @@ def export_excel(db: Database, path: Path) -> None:
     bad_images = _records_with_status(records, "bad_image")
     duplicates = _records_with_status(records, "duplicate")
     no_match = _no_match_records(records)
+    ocr_raw = pd.read_sql_query("SELECT * FROM extraction_runs ORDER BY id", db.conn)
+    extracted = pd.read_sql_query("SELECT * FROM field_suggestions ORDER BY id", db.conn)
+    ref_matches = pd.read_sql_query("SELECT * FROM reference_matches ORDER BY id", db.conn)
+    audit = pd.read_sql_query("SELECT * FROM audit_trail ORDER BY id", db.conn)
     report = pd.DataFrame([
         {"metric": "total_sources", "value": len(sources)},
         {"metric": "total_records", "value": len(records)},
@@ -171,6 +166,10 @@ def export_excel(db: Database, path: Path) -> None:
         {"metric": "bad_image", "value": len(bad_images)},
         {"metric": "duplicate", "value": len(duplicates)},
         {"metric": "no_match", "value": len(no_match)},
+        {"metric": "ocr_success", "value": int((ocr_raw["status"] == "success").sum()) if not ocr_raw.empty else 0},
+        {"metric": "ocr_failed", "value": int((ocr_raw["status"] == "failed").sum()) if not ocr_raw.empty else 0},
+        {"metric": "reference_matched", "value": int((ref_matches["status"] == "matched").sum()) if not ref_matches.empty else 0},
+        {"metric": "multiple_reference_matches", "value": int((ref_matches["status"] == "multiple_reference_matches").sum()) if not ref_matches.empty else 0},
         {"metric": "exported_at", "value": datetime.now(timezone.utc).isoformat(timespec="seconds")},
     ])
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
@@ -183,3 +182,7 @@ def export_excel(db: Database, path: Path) -> None:
         no_match.to_excel(writer, sheet_name="No_Match", index=False)
         duplicates.to_excel(writer, sheet_name="Duplicates", index=False)
         report.to_excel(writer, sheet_name="Processing_Report", index=False)
+        ocr_raw.to_excel(writer, sheet_name="OCR_Raw_Text", index=False)
+        extracted.to_excel(writer, sheet_name="Extracted_Values", index=False)
+        ref_matches.to_excel(writer, sheet_name="Reference_Matches", index=False)
+        audit.to_excel(writer, sheet_name="Audit_Trail", index=False)

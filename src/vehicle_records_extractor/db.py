@@ -72,6 +72,42 @@ class Database:
                 new_values TEXT,
                 changed_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS extraction_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_code TEXT NOT NULL REFERENCES sources(source_code) ON DELETE CASCADE,
+                engine TEXT NOT NULL,
+                raw_text TEXT,
+                processed_image_path TEXT,
+                confidence REAL,
+                status TEXT NOT NULL,
+                error_message TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_extraction_runs_source ON extraction_runs(source_code);
+
+            CREATE TABLE IF NOT EXISTS field_suggestions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_code TEXT NOT NULL REFERENCES sources(source_code) ON DELETE CASCADE,
+                field_name TEXT NOT NULL,
+                raw_value TEXT,
+                clean_value TEXT,
+                confidence REAL,
+                source_type TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_field_suggestions_source ON field_suggestions(source_code);
+
+            CREATE TABLE IF NOT EXISTS reference_matches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_code TEXT NOT NULL REFERENCES sources(source_code) ON DELETE CASCADE,
+                reference_row_id INTEGER REFERENCES reference_rows(id) ON DELETE SET NULL,
+                match_score REAL,
+                matched_by TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_reference_matches_source ON reference_matches(source_code);
             """
         )
         self.conn.commit()
@@ -147,6 +183,58 @@ class Database:
 
     def get_record(self, source_code: str) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM records WHERE source_code = ?", (source_code,)).fetchone()
+
+    def get_source(self, source_code: str) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM sources WHERE source_code = ?", (source_code,)).fetchone()
+
+    def add_extraction_run(self, source_code: str, engine: str, raw_text: str, status: str,
+                           error_message: str = "", processed_image_path: str = "",
+                           confidence: float | None = None) -> None:
+        self.conn.execute(
+            """INSERT INTO extraction_runs
+            (source_code, engine, raw_text, processed_image_path, confidence, status, error_message, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (source_code, engine, raw_text, processed_image_path, confidence, status, error_message, utc_now()),
+        )
+        self.conn.commit()
+
+    def replace_field_suggestions(self, source_code: str, suggestions: list[dict[str, Any]], source_type: str | None = None) -> None:
+        if source_type:
+            self.conn.execute("DELETE FROM field_suggestions WHERE source_code = ? AND source_type = ?", (source_code, source_type))
+        else:
+            self.conn.execute("DELETE FROM field_suggestions WHERE source_code = ?", (source_code,))
+        for item in suggestions:
+            self.conn.execute(
+                """INSERT INTO field_suggestions
+                (source_code, field_name, raw_value, clean_value, confidence, source_type, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (source_code, item.get("field_name", ""), item.get("raw_value", ""), item.get("clean_value", ""),
+                 item.get("confidence"), item.get("source_type", source_type or "ocr"), utc_now()),
+            )
+        self.conn.commit()
+
+    def get_field_suggestions(self, source_code: str, source_type: str | None = None) -> list[sqlite3.Row]:
+        if source_type:
+            return list(self.conn.execute("SELECT * FROM field_suggestions WHERE source_code = ? AND source_type = ? ORDER BY id", (source_code, source_type)))
+        return list(self.conn.execute("SELECT * FROM field_suggestions WHERE source_code = ? ORDER BY id", (source_code,)))
+
+    def clear_field_suggestions(self, source_code: str, source_type: str | None = None) -> None:
+        if source_type:
+            self.conn.execute("DELETE FROM field_suggestions WHERE source_code = ? AND source_type = ?", (source_code, source_type))
+        else:
+            self.conn.execute("DELETE FROM field_suggestions WHERE source_code = ?", (source_code,))
+        self.conn.commit()
+
+    def replace_reference_matches(self, source_code: str, matches: list[dict[str, Any]], status: str) -> None:
+        self.conn.execute("DELETE FROM reference_matches WHERE source_code = ?", (source_code,))
+        for match in matches:
+            self.conn.execute(
+                """INSERT INTO reference_matches
+                (source_code, reference_row_id, match_score, matched_by, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (source_code, match.get("reference_row_id"), match.get("match_score"), match.get("matched_by", ""), status, utc_now()),
+            )
+        self.conn.commit()
 
     def add_reference(self, row: dict[str, Any]) -> None:
         self.conn.execute(
