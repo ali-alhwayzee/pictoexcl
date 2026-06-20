@@ -82,14 +82,21 @@ def normalize_record(data: dict[str, str]) -> dict[str, str]:
     return normalized
 
 
-def validate_record(data: dict[str, str]) -> dict[str, str]:
+def validate_record(data: dict[str, str], require_approval_fields: bool = False) -> dict[str, str]:
     issues: dict[str, str] = {}
     for field in REQUIRED_FIELDS:
         if not data.get(field, "").strip():
             issues[field] = "حقل مطلوب"
     phone = data.get("phone", "").strip()
-    if phone and (not phone.isnumeric() or len(phone) < 7):
-        issues["phone"] = "رقم الهاتف يجب أن يكون رقمياً وطوله مناسب"
+    if phone and (not phone.isnumeric() or len(phone) < 10):
+        issues["phone"] = "رقم الهاتف يجب أن يكون رقمياً ولا يقل عن 10 أرقام"
+    chassis_no = data.get("chassis_no", "")
+    if chassis_no and (chassis_no != chassis_no.upper() or " " in chassis_no):
+        issues["chassis_no"] = "رقم الشاصي يجب أن يكون بأحرف كبيرة وبدون مسافات"
+    if require_approval_fields:
+        for field in ("annual_no", "vehicle_no"):
+            if not data.get(field, "").strip():
+                issues[field] = "لا يمكن تركه فارغاً عند الاعتماد"
     return issues
 
 

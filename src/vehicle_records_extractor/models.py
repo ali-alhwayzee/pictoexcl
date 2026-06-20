@@ -1,12 +1,13 @@
 """Data model constants used across the application."""
 
 FINAL_FIELDS = [
-    "source_code", "driver_name", "birth_date", "birth_place", "province",
-    "district_alley_house", "address_landmark", "ration_card_no", "national_id",
-    "identity_issuer", "registry_page", "mother_name", "wife_name", "vehicle_no",
-    "ownership", "vehicle_type", "vehicle_color", "vehicle_model", "annual_owner_name",
-    "chassis_no", "annual_no", "annual_expiry_date", "phone", "residence_address",
-    "residence_card_no", "residence_card_issuer", "match_source", "review_status", "notes",
+    "source_code", "driver_name", "mother_name", "wife_name", "birth_date",
+    "birth_place", "province", "district_alley_house", "address_landmark",
+    "ration_card_no", "national_id", "identity_issuer", "registry_page",
+    "vehicle_no", "ownership", "vehicle_type", "vehicle_color", "vehicle_model",
+    "annual_owner_name", "chassis_no", "annual_no", "annual_expiry_date", "phone",
+    "residence_address", "residence_card_no", "residence_card_issuer",
+    "match_source", "review_status", "notes",
 ]
 
 FIELD_LABELS_AR = {
@@ -41,7 +42,7 @@ FIELD_LABELS_AR = {
     "notes": "ملاحظات",
 }
 
-REQUIRED_FIELDS = ["source_code", "driver_name", "mother_name", "vehicle_no", "review_status"]
+REQUIRED_FIELDS = ["driver_name", "mother_name", "vehicle_no", "vehicle_type", "chassis_no", "annual_no", "phone"]
 REVIEW_STATUSES = ["draft", "approved", "needs_review", "bad_image", "duplicate"]
 SOURCE_STATUSES = ["imported", "draft", "approved", "needs_review", "bad_image", "duplicate"]
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".pdf"}
