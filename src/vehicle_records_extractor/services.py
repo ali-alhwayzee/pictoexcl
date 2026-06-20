@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -116,22 +116,63 @@ def load_preview(path: str, max_size: tuple[int, int] = (900, 900)) -> QPixmap |
         return None
 
 
+def _records_export_columns(db: Database) -> list[str]:
+    """Return stable record export columns, including optional schema additions."""
+    record_columns = {
+        row["name"] for row in db.conn.execute("PRAGMA table_info(records)")
+    }
+    columns = [field for field in FINAL_FIELDS if field in record_columns]
+    if "match_status" in record_columns and "match_status" not in columns:
+        columns.append("match_status")
+    return columns
+
+
+def _records_with_status(records: pd.DataFrame, status: str) -> pd.DataFrame:
+    if records.empty:
+        return records.copy()
+    return records[records["review_status"] == status].copy()
+
+
+def _no_match_records(records: pd.DataFrame) -> pd.DataFrame:
+    if records.empty:
+        return records.copy()
+    review_no_match = records["review_status"] == "no_match"
+    if "match_status" in records.columns:
+        match_no_match = records["match_status"] == "no_match"
+        return records[review_no_match | match_no_match].copy()
+    return records[review_no_match].copy()
+
+
 def export_excel(db: Database, path: Path) -> None:
     sources = pd.read_sql_query("SELECT * FROM sources ORDER BY id", db.conn)
-    records = pd.read_sql_query("SELECT {fields} FROM records ORDER BY id".format(fields=", ".join(FINAL_FIELDS)), db.conn)
-    needs_review = records[records["review_status"].isin(["needs_review", "bad_image", "draft"])] if not records.empty else records
-    no_match = records[records["match_source"].isin(["", "none", "no_match"])] if not records.empty else records
-    duplicates = records[records["review_status"] == "duplicate"] if not records.empty else records
+    record_columns = _records_export_columns(db)
+    records = pd.read_sql_query(
+        "SELECT {fields} FROM records ORDER BY id".format(fields=", ".join(record_columns)), db.conn
+    )
+    approved = _records_with_status(records, "approved")
+    needs_review = _records_with_status(records, "needs_review")
+    drafts = _records_with_status(records, "draft")
+    bad_images = _records_with_status(records, "bad_image")
+    duplicates = _records_with_status(records, "duplicate")
+    no_match = _no_match_records(records)
     report = pd.DataFrame([
-        {"metric": "sources", "value": len(sources)},
-        {"metric": "final_records", "value": len(records)},
+        {"metric": "total_sources", "value": len(sources)},
+        {"metric": "total_records", "value": len(records)},
+        {"metric": "approved", "value": len(approved)},
+        {"metric": "draft", "value": len(drafts)},
         {"metric": "needs_review", "value": len(needs_review)},
-        {"metric": "duplicates", "value": len(duplicates)},
+        {"metric": "bad_image", "value": len(bad_images)},
+        {"metric": "duplicate", "value": len(duplicates)},
+        {"metric": "no_match", "value": len(no_match)},
+        {"metric": "exported_at", "value": datetime.now(timezone.utc).isoformat(timespec="seconds")},
     ])
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        records.to_excel(writer, sheet_name="Final_Data", index=False)
+        approved.to_excel(writer, sheet_name="Final_Data", index=False)
+        records.to_excel(writer, sheet_name="All_Records", index=False)
         sources.to_excel(writer, sheet_name="Source_Index", index=False)
         needs_review.to_excel(writer, sheet_name="Needs_Review", index=False)
+        drafts.to_excel(writer, sheet_name="Drafts", index=False)
+        bad_images.to_excel(writer, sheet_name="Bad_Images", index=False)
         no_match.to_excel(writer, sheet_name="No_Match", index=False)
         duplicates.to_excel(writer, sheet_name="Duplicates", index=False)
         report.to_excel(writer, sheet_name="Processing_Report", index=False)
