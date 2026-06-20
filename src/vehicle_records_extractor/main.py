@@ -9,10 +9,12 @@ from PySide6.QtGui import QKeySequence, QPixmap, QShortcut, QTransform
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QMainWindow, QMessageBox, QPushButton, QScrollArea, QSplitter,
-    QTabWidget, QVBoxLayout, QWidget,
+    QTabWidget, QTextEdit, QVBoxLayout, QWidget, QCheckBox, QProgressDialog,
 )
 
 from .db import Database
+from .extraction import extract_field_suggestions, find_reference_matches, reference_suggestions
+from .ocr import ARABIC_TESSERACT_ERROR, run_ocr
 from .models import FIELD_LABELS_AR, FINAL_FIELDS, REQUIRED_FIELDS
 from .services import export_excel, import_folder, import_reference_excel, load_preview, normalize_record, validate_record
 
@@ -40,6 +42,7 @@ class MainWindow(QMainWindow):
         self.resize(1300, 850)
         self.db = Database(Path.home() / ".vehicle_records_extractor" / "records.sqlite3")
         self.inputs: dict[str, QLineEdit] = {}
+        self.field_info: dict[str, QLabel] = {}
         self.source_list = QListWidget()
         self.status_indicator = QLabel("مسودة")
         self.status_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -127,7 +130,11 @@ class MainWindow(QMainWindow):
                 edit.setStyleSheet("background:#f3f4f6;color:#555;")
             self.inputs[field] = edit
             label_text = FIELD_LABELS_AR[field] + (" *" if field in REQUIRED_FIELDS else "")
-            form.addRow(QLabel(label_text), edit)
+            box = QWidget(); box_layout = QVBoxLayout(box); box_layout.setContentsMargins(0, 0, 0, 0)
+            info = QLabel(""); info.setStyleSheet("color:#6b7280;font-size:10px;")
+            self.field_info[field] = info
+            box_layout.addWidget(edit); box_layout.addWidget(info)
+            form.addRow(QLabel(label_text), box)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(form_widget)
@@ -142,7 +149,21 @@ class MainWindow(QMainWindow):
             btn = QPushButton(text)
             btn.clicked.connect(lambda _, s=status: self.save_record(s))
             buttons.addWidget(btn)
+        ocr_buttons = QHBoxLayout()
+        for text, handler in [("Run OCR for current source", self.run_ocr_current), ("Apply OCR suggestions", lambda: self.apply_suggestions("ocr")), ("Show raw OCR text", self.show_raw_ocr_text), ("Clear OCR suggestions for current source", self.clear_ocr_suggestions)]:
+            btn = QPushButton(text); btn.clicked.connect(handler); ocr_buttons.addWidget(btn)
+        ref_buttons = QHBoxLayout()
+        for text, handler in [("Match with Reference Excel", self.match_reference_current), ("Apply Reference Match", lambda: self.apply_suggestions("reference_excel")), ("Show Reference Match Details", self.show_reference_details)]:
+            btn = QPushButton(text); btn.clicked.connect(handler); ref_buttons.addWidget(btn)
+        batch_buttons = QHBoxLayout()
+        self.skip_approved = QCheckBox("Skip approved records"); self.skip_approved.setChecked(True)
+        batch_btn = QPushButton("Process OCR for current batch"); batch_btn.clicked.connect(self.run_ocr_batch)
+        one_btn = QPushButton("Process OCR for current source"); one_btn.clicked.connect(self.run_ocr_current)
+        batch_buttons.addWidget(one_btn); batch_buttons.addWidget(batch_btn); batch_buttons.addWidget(self.skip_approved)
         left_layout.addWidget(scroll)
+        left_layout.addLayout(ocr_buttons)
+        left_layout.addLayout(ref_buttons)
+        left_layout.addLayout(batch_buttons)
         left_layout.addLayout(buttons)
         preview_panel = QWidget()
         preview_layout = QVBoxLayout(preview_panel)
@@ -228,7 +249,98 @@ class MainWindow(QMainWindow):
             else:
                 self.preview.clear()
                 self.preview.setText("تعذر عرض المعاينة. ثبّت PyMuPDF لمعاينة PDF.")
+        self.refresh_field_indicators()
         self.update_required_highlights()
+
+    def current_source_code(self) -> str:
+        return self.inputs.get("source_code", QLineEdit()).text().strip()
+
+    def run_ocr_current(self) -> None:
+        code = self.current_source_code()
+        source = self.db.get_source(code) if code else None
+        if not source: return
+        result = run_ocr(source["file_path"])
+        status = "failed" if result.error_message else "success"
+        self.db.add_extraction_run(code, "tesseract ara+eng", result.raw_text, status, result.error_message, result.processed_image_path, result.confidence)
+        if result.error_message:
+            QMessageBox.warning(self, APP_TITLE, result.error_message or ARABIC_TESSERACT_ERROR)
+            return
+        suggestions = extract_field_suggestions(result.raw_text)
+        self.db.replace_field_suggestions(code, suggestions, "ocr")
+        self.refresh_field_indicators()
+        QMessageBox.information(self, APP_TITLE, f"تم تشغيل OCR وحفظ {len(suggestions)} اقتراح/اقتراحات.")
+
+    def run_ocr_batch(self) -> None:
+        sources = self.db.list_sources(); total = len(sources)
+        progress = QProgressDialog("Processing OCR...", "Cancel", 0, total, self); progress.setWindowModality(Qt.WindowModality.WindowModal)
+        for i, source in enumerate(sources, 1):
+            progress.setValue(i - 1); progress.setLabelText(f"{i}/{total}: {source['source_code']}"); QApplication.processEvents()
+            if progress.wasCanceled(): break
+            record = self.db.get_record(source["source_code"])
+            if self.skip_approved.isChecked() and record and record["review_status"] == "approved": continue
+            result = run_ocr(source["file_path"]); status = "failed" if result.error_message else "success"
+            self.db.add_extraction_run(source["source_code"], "tesseract ara+eng", result.raw_text, status, result.error_message, result.processed_image_path, result.confidence)
+            if not result.error_message:
+                self.db.replace_field_suggestions(source["source_code"], extract_field_suggestions(result.raw_text), "ocr")
+        progress.setValue(total); self.refresh_field_indicators(); QMessageBox.information(self, APP_TITLE, "اكتملت معالجة الدفعة وحُفظ التقدم بعد كل مصدر.")
+
+    def show_raw_ocr_text(self) -> None:
+        code = self.current_source_code()
+        row = self.db.conn.execute("SELECT raw_text, error_message FROM extraction_runs WHERE source_code = ? ORDER BY id DESC LIMIT 1", (code,)).fetchone()
+        dlg = QMessageBox(self); dlg.setWindowTitle("Raw OCR Text"); dlg.setText((row["raw_text"] or row["error_message"] or "لا يوجد نص OCR محفوظ.") if row else "لا يوجد نص OCR محفوظ."); dlg.exec()
+
+    def clear_ocr_suggestions(self) -> None:
+        code = self.current_source_code(); self.db.clear_field_suggestions(code, "ocr"); self.refresh_field_indicators(); QMessageBox.information(self, APP_TITLE, "تم حذف اقتراحات OCR للمصدر الحالي.")
+
+    def match_reference_current(self) -> None:
+        code = self.current_source_code(); keys = {f: self.inputs[f].text() for f in self.inputs}
+        for sug in self.db.get_field_suggestions(code, "ocr"):
+            keys.setdefault(sug["field_name"], sug["clean_value"] or "")
+            if not keys.get(sug["field_name"]): keys[sug["field_name"]] = sug["clean_value"] or ""
+        matches = find_reference_matches(self.db, code, keys)
+        status = "multiple_reference_matches" if len(matches) > 1 else ("matched" if len(matches) == 1 else "no_match")
+        self.db.replace_reference_matches(code, matches, status)
+        if len(matches) == 1:
+            self.db.replace_field_suggestions(code, reference_suggestions(matches[0]), "reference_excel")
+        self.refresh_field_indicators(); QMessageBox.information(self, APP_TITLE, f"نتيجة المطابقة: {status} ({len(matches)} candidates)")
+
+    def show_reference_details(self) -> None:
+        code = self.current_source_code()
+        rows = self.db.conn.execute("SELECT rm.*, rr.raw_json FROM reference_matches rm LEFT JOIN reference_rows rr ON rr.id = rm.reference_row_id WHERE rm.source_code = ? ORDER BY rm.match_score DESC", (code,)).fetchall()
+        text = "\n\n".join(f"#{r['reference_row_id']} score={r['match_score']} by={r['matched_by']} status={r['status']}\n{r['raw_json'] or ''}" for r in rows) or "لا توجد مطابقات مرجعية."
+        dlg = QMessageBox(self); dlg.setWindowTitle("Reference Match Details"); dlg.setText(text); dlg.exec()
+
+    def apply_suggestions(self, source_type: str) -> None:
+        code = self.current_source_code(); record_status = self.inputs.get("review_status", QLineEdit()).text()
+        if record_status == "approved":
+            ans = QMessageBox.question(self, APP_TITLE, "السجل معتمد. هل تريد تطبيق الاقتراحات؟", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes: return
+        changed = 0
+        for sug in self.db.get_field_suggestions(code, source_type):
+            field = sug["field_name"]
+            if field not in self.inputs: continue
+            current = self.inputs[field].text().strip(); value = sug["clean_value"] or ""
+            if current and current != value:
+                ans = QMessageBox.question(self, APP_TITLE, f"{FIELD_LABELS_AR.get(field, field)} يحتوي قيمة. هل تريد الاستبدال؟", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if ans != QMessageBox.StandardButton.Yes: continue
+            if value and (not current or current != value): self.inputs[field].setText(value); changed += 1
+        self.refresh_field_indicators(); QMessageBox.information(self, APP_TITLE, f"تم تطبيق {changed} قيمة.")
+
+    def refresh_field_indicators(self) -> None:
+        code = self.current_source_code()
+        by_field = {}
+        for row in self.db.get_field_suggestions(code) if code else []:
+            by_field.setdefault(row["field_name"], []).append(row)
+        for field, label in self.field_info.items():
+            rows = by_field.get(field, [])
+            if rows:
+                r = rows[-1]; conf = r["confidence"]
+                label.setText(f"{r['source_type']}" + (f" • {conf:.0f}%" if conf is not None else ""))
+                label.setStyleSheet("color:#dc2626;font-size:10px;" if conf is not None and conf < 60 else "color:#2563eb;font-size:10px;")
+            elif self.inputs.get(field) and self.inputs[field].text().strip():
+                label.setText("manual"); label.setStyleSheet("color:#6b7280;font-size:10px;")
+            else:
+                label.setText("")
 
     def update_status_indicator(self, status: str) -> None:
         display = STATUS_LABELS_AR.get(status, STATUS_LABELS_AR["draft"])

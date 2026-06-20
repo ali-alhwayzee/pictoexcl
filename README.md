@@ -80,3 +80,82 @@ python -m vehicle_records_extractor.main
 ```bash
 python -m compileall src
 ```
+
+## Phase 2: Local OCR, Extraction Suggestions, and Reference Matching
+
+Phase 2 remains fully local/offline:
+
+- OCR uses local Tesseract through `pytesseract` with language `ara+eng`.
+- Images/PDFs are read from disk only; no cloud APIs are used and no data is uploaded.
+- Original image/PDF files are never modified. OCR preprocessing writes temporary processed copies under the operating system temp directory.
+- OCR and reference suggestions are stored separately from reviewed records and do **not** overwrite approved or manually entered values automatically.
+
+### Install Tesseract on Windows
+
+1. Install the Python OCR extras:
+
+   ```powershell
+   pip install -e ".[ocr,pdf]"
+   ```
+
+2. Install Tesseract for Windows, for example from the UB Mannheim Windows builds.
+3. During setup, select the Arabic language data if offered.
+4. Add the Tesseract install directory to `PATH`, commonly:
+
+   ```text
+   C:\Program Files\Tesseract-OCR
+   ```
+
+5. Open a new terminal and verify:
+
+   ```powershell
+   tesseract --version
+   tesseract --list-langs
+   ```
+
+### Install Arabic language data
+
+If Arabic is not listed by `tesseract --list-langs`, install `ara.traineddata` into Tesseract's `tessdata` directory. On Windows this is commonly:
+
+```text
+C:\Program Files\Tesseract-OCR\tessdata\ara.traineddata
+```
+
+The app will show this Arabic error if Tesseract or Arabic OCR support is unavailable:
+
+```text
+محرك OCR غير مثبت. يرجى تثبيت Tesseract وإضافة اللغة العربية.
+```
+
+### Test OCR on 10 images
+
+1. Import a folder containing 10 sample images or PDFs.
+2. Open **مراجعة السجلات**.
+3. Select the first source and click **Run OCR for current source**.
+4. Click **Show raw OCR text** and confirm text was saved.
+5. Click **Apply OCR suggestions** and review the filled empty fields.
+6. Use **Process OCR for current batch** with **Skip approved records** checked to process the remaining imported sources.
+7. Watch the progress dialog; if OCR fails for one source, processing continues and the failure is saved in the OCR run history.
+
+### Recommended Phase 2 workflow
+
+1. Import 10 images.
+2. Run OCR for one source.
+3. Check raw OCR text.
+4. Apply suggestions.
+5. Import reference Excel.
+6. Run reference matching.
+7. Review manually.
+8. Approve.
+9. Export Excel.
+
+### Phase 2 export sheets
+
+The Excel export keeps the original sheets and adds:
+
+- `OCR_Raw_Text`
+- `Extracted_Values`
+- `Reference_Matches`
+- `Audit_Trail`
+
+`Processing_Report` now also includes OCR success/failure counts and reference matching counts.
