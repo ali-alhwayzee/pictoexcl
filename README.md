@@ -19,7 +19,7 @@ A local offline desktop application for extracting, registering, reviewing, and 
   - strips spaces and uppercases chassis numbers
   - normalizes common date formats when possible
 - Audit trail table records each record update.
-- Excel export with sheets: `Final_Data`, `Source_Index`, `Needs_Review`, `No_Match`, `Duplicates`, and `Processing_Report`.
+- Excel export with sheets: `Final_Data`, `All_Records`, `Source_Index`, `Needs_Review`, `Drafts`, `Bad_Images`, `No_Match`, `Duplicates`, and `Processing_Report`.
 - Tesseract OCR can be installed later via the optional `ocr` extra; the MVP prepares local processing without requiring cloud services.
 
 ## Requirements
